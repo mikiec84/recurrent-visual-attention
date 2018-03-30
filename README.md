@@ -1,4 +1,5 @@
 # Recurrent Visual Attention
+A refactored version of the origin [repo](https://github.com/kevinzakka/recurrent-visual-attention)
 
 This is a **PyTorch** implementation of [Recurrent Models of Visual Attention](https://arxiv.org/abs/1406.6247) by *Volodymyr Mnih, Nicolas Heess, Alex Graves and Koray Kavukcuoglu*.
 
@@ -50,7 +51,7 @@ Finally, here's an animation showing the glimpses extracted by the network on a 
 
 ## Usage
 
-The easiest way to start training your RAM variant is to edit the parameters in `config.py` and run the following command:
+The easiest way to start training your RAM variant is to edit the parameters in `main.py` and run the following command:
 
 ```
 python main.py

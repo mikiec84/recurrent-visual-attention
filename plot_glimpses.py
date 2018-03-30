@@ -1,3 +1,4 @@
+import os
 import pickle
 import argparse
 import numpy as np
@@ -21,10 +22,10 @@ def main(plot_dir, epoch):
 
     # read in pickle files
     glimpses = pickle.load(
-        open(plot_dir + "g_{}.p".format(epoch), "rb")
+        open(os.path.join(plot_dir, "g_{}.p".format(epoch)), "rb")
     )
     locations = pickle.load(
-        open(plot_dir + "l_{}.p".format(epoch), "rb")
+        open(os.path.join(plot_dir, "l_{}.p".format(epoch)), "rb")
     )
 
     glimpses = np.concatenate(glimpses)

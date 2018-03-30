@@ -1,4 +1,5 @@
-import math
+from torch.autograd import Variable
+import torch.nn.functional as F
 
 import torch
 import torch.nn as nn
@@ -24,45 +25,27 @@ class RecurrentAttention(nn.Module):
     ----------
     - Minh et. al., https://arxiv.org/abs/1406.6247
     """
-    def __init__(self,
-                 g,
-                 k,
-                 s,
-                 c,
-                 h_g,
-                 h_l,
-                 std,
-                 hidden_size,
-                 num_classes):
+
+    def __init__(self, args):
         """
         Initialize the recurrent attention model and its
         different components.
-
-        Args
-        ----
-        - g: size of the square patches in the glimpses extracted
-          by the retina.
-        - k: number of patches to extract per glimpse.
-        - s: scaling factor that controls the size of successive patches.
-        - c: number of channels in each image.
-        - h_g: hidden layer size of the fc layer for `phi`.
-        - h_l: hidden layer size of the fc layer for `l`.
-        - std: standard deviation of the Gaussian policy.
-        - hidden_size: hidden size of the rnn.
-        - num_classes: number of classes in the dataset.
-        - num_glimpses: number of glimpses to take per image,
-          i.e. number of BPTT steps.
         """
         super(RecurrentAttention, self).__init__()
-        self.std = std
+        self.std = args.std
+        self.hidden_size = args.hidden_size
+        self.use_gpu = args.use_gpu
+        self.num_glimpses = args.num_glimpses
+        self.M = args.M
 
-        self.sensor = glimpse_network(h_g, h_l, g, k, s, c)
-        self.rnn = core_network(hidden_size, hidden_size)
-        self.locator = location_network(hidden_size, 2, std)
-        self.classifier = action_network(hidden_size, num_classes)
-        self.baseliner = baseline_network(hidden_size, 1)
+        self.sensor = glimpse_network(args.glimpse_hidden, args.loc_hidden, args.patch_size, args.num_patches, args.glimpse_scale, args.num_channels)
+        self.rnn = core_network(args.hidden_size, args.hidden_size)
+        self.locator = location_network(args.hidden_size, 2, args.std)
+        self.classifier = action_network(args.hidden_size, args.num_classes)
+        self.baseliner = baseline_network(args.hidden_size, 1)
+        self.name = 'ram_{}_{}x{}_{}'.format(args.num_glimpses, args.patch_size, args.patch_size, args.glimpse_scale)
 
-    def forward(self, x, l_t_prev, h_t_prev, last=False):
+    def step(self, x, l_t_prev, h_t_prev, last=False):
         """
         Run the recurrent attention model for 1 timestep
         on the minibatch of images `x`.
@@ -109,4 +92,135 @@ class RecurrentAttention(nn.Module):
             log_probas = self.classifier(h_t)
             return h_t, l_t, b_t, log_probas, log_pi
 
-        return h_t, l_t, b_t, log_pi
+        return h_t, l_t, b_t, None, log_pi
+
+    def init_state(self, batch_size, use_gpu=False):
+        """
+        Initialize the hidden state of the core network
+        and the location vector.
+
+        This is called once every time a new minibatch
+        `x` is introduced.
+        """
+        dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
+        h_t = torch.zeros(batch_size, self.hidden_size)
+        h_t = Variable(h_t).type(dtype)
+
+        l_t = torch.Tensor(batch_size, 2).uniform_(-1, 1)
+        l_t = Variable(l_t).type(dtype)
+
+        return h_t, l_t
+
+    def forward(self, x, y, is_training=False):
+        if self.use_gpu:
+            x, y = x.cuda(), y.cuda()
+        x, y = Variable(x), Variable(y)
+
+        if not is_training:
+            return self.forward_test(x, y)
+
+        # initialize location vector and hidden state
+        h_t, l_t = self.init_state(x.shape[0])
+
+        # extract the glimpses
+        locs = []
+        log_pi = []
+        baselines = []
+        for t in range(self.num_glimpses):
+            # Note that log_probas is None except for t=num_glimpses-1
+            h_t, l_t, b_t, log_probas, p = self.step(x, l_t, h_t, last=(t==self.num_glimpses-1))
+
+            # store
+            locs.append(l_t)
+            baselines.append(b_t)
+            log_pi.append(p)
+
+        # convert list to tensors and reshape
+        baselines = torch.stack(baselines).transpose(1, 0)
+        log_pi = torch.stack(log_pi).transpose(1, 0)
+
+        # calculate reward
+        predicted = torch.max(log_probas, 1)[1]
+        R = (predicted.detach() == y).float()
+        R = R.unsqueeze(1).repeat(1, self.num_glimpses)
+
+        # compute losses for differentiable modules
+        loss_action = F.nll_loss(log_probas, y)
+        loss_baseline = F.mse_loss(baselines, R)
+
+        # compute reinforce loss
+        adjusted_reward = R - baselines.detach()
+        loss_reinforce = torch.mean(-log_pi*adjusted_reward)
+
+        # sum up into a hybrid loss
+        loss = loss_action + loss_baseline + loss_reinforce
+
+        correct = (predicted == y).float()
+        acc = 100 * (correct.sum() / len(y))
+
+        return {'loss': loss,
+                'acc': acc,
+                'locs': locs,
+                'x': x}
+
+    def forward_test(self, x, y):
+        # duplicate 10 times
+        x = x.repeat(self.M, 1, 1, 1)
+
+        # initialize location vector and hidden state
+        h_t, l_t = self.init_state(x.shape[0])
+
+        # extract the glimpses
+        log_pi = []
+        baselines = []
+        for t in range(self.num_glimpses):
+
+            # forward pass through model
+            h_t, l_t, b_t, log_probas, p = self.step(x, l_t, h_t, last=(t==self.num_glimpses-1))
+
+            # store
+            baselines.append(b_t)
+            log_pi.append(p)
+
+        # convert list to tensors and reshape
+        baselines = torch.stack(baselines).transpose(1, 0)
+        log_pi = torch.stack(log_pi).transpose(1, 0)
+
+        # average
+        log_probas = log_probas.view(
+            self.M, -1, log_probas.shape[-1]
+        )
+        log_probas = torch.mean(log_probas, dim=0)
+
+        baselines = baselines.contiguous().view(
+            self.M, -1, baselines.shape[-1]
+        )
+        baselines = torch.mean(baselines, dim=0)
+
+        log_pi = log_pi.contiguous().view(
+            self.M, -1, log_pi.shape[-1]
+        )
+        log_pi = torch.mean(log_pi, dim=0)
+
+        # calculate reward
+        predicted = torch.max(log_probas, 1)[1]
+        R = (predicted.detach() == y).float()
+        R = R.unsqueeze(1).repeat(1, self.num_glimpses)
+
+        # compute losses for differentiable modules
+        loss_action = F.nll_loss(log_probas, y)
+        loss_baseline = F.mse_loss(baselines, R)
+
+        # compute reinforce loss
+        adjusted_reward = R - baselines.detach()
+        loss_reinforce = torch.mean(-log_pi*adjusted_reward)
+
+        # sum up into a hybrid loss
+        loss = loss_action + loss_baseline + loss_reinforce
+
+        # compute accuracy
+        correct = (predicted == y).float()
+        acc = 100 * (correct.sum() / len(y))
+
+        return {'loss': loss,
+                'acc': acc}
