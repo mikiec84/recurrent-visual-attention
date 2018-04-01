@@ -8,218 +8,115 @@ import numpy as np
 
 
 class retina(object):
-    """
-    A retina that extracts a foveated glimpse `phi`
-    around location `l` from an image `x`. It encodes
-    the region around `l` at a high-resolution but uses
-    a progressively lower resolution for pixels further
-    from `l`, resulting in a compressed representation
-    of the original image `x`.
-
-    Args
-    ----
-    - x: a 4D Tensor of shape (B, H, W, C). The minibatch
-      of images.
-    - l: a 2D Tensor of shape (B, 2). Contains normalized
-      coordinates in the range [-1, 1].
-    - g: size of the first square patch.
-    - k: number of patches to extract in the glimpse.
-    - s: scaling factor that controls the size of
-      successive patches.
-
-    Returns
-    -------
-    - phi: a 5D tensor of shape (B, k, g, g, C). The
-      foveated glimpse of the image.
-    """
-    def __init__(self, g, k, s):
-        self.g = g
-        self.k = k
-        self.s = s
+    def __init__(self, patch_size, num_patches, scale):
+        """
+        @param patch_size: side length of the extracted patched.
+        @param num_patches: number of patches to extract in the glimpse.
+        @param scale: scaling factor that controls the size of successive patches.
+        """
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+        self.scale = scale
 
     def foveate(self, x, l):
         """
-        Extract `k` square patches of size `g`, centered
-        at location `l`. The initial patch is a square of
-        size `g`, and each subsequent patch is a square
-        whose side is `s` times the size of the previous
-        patch.
+        Extract `num_patches` square patches,  centered at location `l`.
+        The initial patch is a square of sidelength `patch_size`,
+        and each subsequent patch is a square whose sidelength is `scale`
+        times the size of the previous patch.  All patches are finally
+        resized to the same size of the first patch and then flattened.
 
-        The `k` patches are finally resized to (g, g) and
-        concatenated into a tensor of shape (B, k, g, g, C).
+        @param x: img. (batch, height, width, channel)
+        @param l: location. (batch,2)
+        @return Variable: (batch, num_patches*channel*patch_size*patch_size).
         """
-        phi = []
-        size = self.g
+        patches = []
+        size = self.patch_size
 
-        # extract k patches of increasing size
-        for i in range(self.k):
-            phi.append(self.extract_patch(x, l, size))
-            size = int(self.s * size)
+        # extract num_patches patches of increasing size
+        for i in range(self.num_patches):
+            patches.append(self.extract_patch(x, l, size))
+            size = int(self.scale * size)
 
-        # resize the patches to squares of size g
-        for i in range(1, len(phi)):
-            k = phi[i].shape[-1] // self.g
-            phi[i] = F.avg_pool2d(phi[i], k)
+        # resize the patches to squares of size patch_size
+        for i in range(1, len(patches)):
+            num_patches = patches[i].shape[-1] // self.patch_size
+            patches[i] = F.avg_pool2d(patches[i], num_patches)
 
         # concatenate into a single tensor and flatten
-        phi = torch.cat(phi, 1)
-        phi = phi.view(phi.shape[0], -1)
+        patches = torch.cat(patches, 1)
+        patches = patches.view(patches.shape[0], -1)
 
-        return phi
+        return patches
 
     def extract_patch(self, x, l, size):
         """
-        Extract a single patch for each image in the
-        minibatch `x`.
-
-        Args
-        ----
-        - x: a 4D Tensor of shape (B, H, W, C). The minibatch
-          of images.
-        - l: a 2D Tensor of shape (B, 2).
-        - size: a scalar defining the size of the extracted patch.
-
-        Returns
-        -------
-        - patch: a 4D Tensor of shape (B, size, size, C)
+        @param x: img. (batch, channel, height, width)
+        @param l: location. (batch, 2)
+        @param size: the size of the extracted patch.
+        @return Variable (batch, channel, size, size)
         """
         B, C, H, W = x.shape
 
-        # denormalize coords of patch center
-        coords = self.denormalize(H, l)
+        if not hasattr(self, 'imgShape'):
+            self.imgShape = torch.FloatTensor([H, W]).unsqueeze(0)
 
-        # compute top left corner of patch
-        patch_x = coords[:, 0] - (size // 2)
-        patch_y = coords[:, 1] - (size // 2)
+        # coordins from [-1,1] to H,W scale
+        coords = (0.5 * ((l.data + 1.0) * self.imgShape)).long()
 
-        # loop through mini-batch and extract
+        # pad the image with enough 0s
+        x = nn.ConstantPad2d(size//2, 0.)(x)
+
+        # calculate coordinate for each batch samle (padding considered)
+        from_x, from_y = coords[:, 0], coords[:, 1]
+        to_x, to_y = from_x + size, from_y + size
+
+        # extract the patches
         patch = []
         for i in range(B):
-            im = x[i].unsqueeze(dim=0)
-            T = im.shape[-1]
+            patch.append(x[i, :, from_y[i]:to_y[i], from_x[i]:to_x[i]].unsqueeze(0))
 
-            # compute slice indices
-            from_x, to_x = patch_x[i], patch_x[i] + size
-            from_y, to_y = patch_y[i], patch_y[i] + size
-
-            # cast to ints
-            from_x, to_x = from_x.data[0], to_x.data[0]
-            from_y, to_y = from_y.data[0], to_y.data[0]
-
-            # pad tensor in case exceeds
-            if self.exceeds(from_x, to_x, from_y, to_y, T):
-                pad_dims = (
-                    size//2+1, size//2+1,
-                    size//2+1, size//2+1,
-                    0, 0,
-                    0, 0,
-                )
-                im = F.pad(im, pad_dims, "constant", 0)
-
-                # add correction factor
-                from_x += (size//2+1)
-                to_x += (size//2+1)
-                from_y += (size//2+1)
-                to_y += (size//2+1)
-
-            # and finally extract
-            patch.append(im[:, :, from_y:to_y, from_x:to_x])
-
-        # concatenate into a single tensor
-        patch = torch.cat(patch)
-
-        return patch
-
-    def denormalize(self, T, coords):
-        """
-        Convert coordinates in the range [-1, 1] to
-        coordinates in the range [0, T] where `T` is
-        the size of the image.
-        """
-        return (0.5 * ((coords + 1.0) * T)).long()
-
-    def exceeds(self, from_x, to_x, from_y, to_y, T):
-        """
-        Check whether the extracted patch will exceed
-        the boundaries of the image of size `T`.
-        """
-        if (
-            (from_x < 0) or (from_y < 0) or (to_x > T) or (to_y > T)
-        ):
-            return True
-        return False
+        return torch.cat(patch)
 
 
 class glimpse_network(nn.Module):
-    """
-    A network that combines the "what" and the "where"
-    into a glimpse feature vector `g_t`.
-
-    - "what": glimpse extracted from the retina.
-    - "where": location tuple where glimpse was extracted.
-
-    Concretely, feeds the output of the retina `phi` to
-    a fc layer and the glimpse location vector `l_t_prev`
-    to a fc layer. Finally, these outputs are fed each
-    through a fc layer and their sum is rectified.
-
-    In other words:
-
-        `g_t = relu( fc( fc(l) ) + fc( fc(phi) ) )`
-
-    Args
-    ----
-    - h_g: hidden layer size of the fc layer for `phi`.
-    - h_l: hidden layer size of the fc layer for `l`.
-    - g: size of the square patches in the glimpses extracted
-      by the retina.
-    - k: number of patches to extract per glimpse.
-    - s: scaling factor that controls the size of successive patches.
-    - c: number of channels in each image.
-    - x: a 4D Tensor of shape (B, H, W, C). The minibatch
-      of images.
-    - l_t_prev: a 2D tensor of shape (B, 2). Contains the glimpse
-      coordinates [x, y] for the previous timestep `t-1`.
-
-    Returns
-    -------
-    - g_t: a 2D tensor of shape (B, hidden_size). The glimpse
-      representation returned by the glimpse network for the
-      current timestep `t`.
-    """
-    def __init__(self, h_g, h_l, g, k, s, c):
+    def __init__(self, hidden_g, hidden_l, patch_size, num_patches, scale, num_channel):
+        """
+        @param hidden_g: hidden layer size of the fc layer for `phi`.
+        @param hidden_l: hidden layer size of the fc layer for `l`.
+        @param patch_size: size of the square patches in the glimpses extracted
+        @param by the retina.
+        @param num_patches: number of patches to extract per glimpse.
+        @param scale: scaling factor that controls the size of successive patches.
+        @param num_channel: number of channels in each image.
+        """
         super(glimpse_network, self).__init__()
-        self.retina = retina(g, k, s)
+        self.retina = retina(patch_size, num_patches, scale)
 
         # glimpse layer
-        D_in = k*g*g*c
-        self.fc1 = nn.Linear(D_in, h_g)
+        D_in = num_patches*patch_size*patch_size*num_channel
+        self.fc1 = nn.Linear(D_in, hidden_g)
 
         # location layer
-        D_in = 2
-        self.fc2 = nn.Linear(D_in, h_l)
+        self.fc2 = nn.Linear(2, hidden_l)
 
-        self.fc3 = nn.Linear(h_g, h_g+h_l)
-        self.fc4 = nn.Linear(h_l, h_g+h_l)
+        self.fc3 = nn.Linear(hidden_g, hidden_g+hidden_l)
+        self.fc4 = nn.Linear(hidden_l, hidden_g+hidden_l)
 
-    def forward(self, x, l_t_prev):
-        # generate glimpse phi from image x
-        phi = self.retina.foveate(x, l_t_prev)
+    def forward(self, x_t, l_t):
+        """
+        @param x_t: (batch, height, width, channel)
+        @param l_t: (batch, 2)
+        @return output: (batch, hidden_g+hidden_l)
+        """
+        glimpse = self.retina.foveate(x_t, l_t)
 
-        # flatten location vector
-        l_t_prev = l_t_prev.view(l_t_prev.size(0), -1)
+        what = self.fc3(F.relu(self.fc1(glimpse)))
+        where = self.fc4(F.relu(self.fc2(l_t)))
 
-        # feed phi and l to respective fc layers
-        phi_out = F.relu(self.fc1(phi))
-        l_out = F.relu(self.fc2(l_t_prev))
+        g = F.relu(what + where)
 
-        what = self.fc3(phi_out)
-        where = self.fc4(l_out)
-
-        # feed to fc layer
-        g_t = F.relu(what + where)
-
-        return g_t
+        return g
 
 
 class core_network(nn.Module):
