@@ -213,7 +213,10 @@ class RecurrentAttention(nn.Module):
 
         # compute reinforce loss
         adjusted_reward = R - baselines.detach()
-        loss_reinforce = torch.mean(-log_pi*adjusted_reward)
+        # https://github.com/kevinzakka/recurrent-visual-attention/issues/10
+        # loss_reinforce = torch.mean(-log_pi*adjusted_reward)
+        loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
+        loss_reinforce = torch.mean(loss_reinforce)
 
         # sum up into a hybrid loss
         loss = loss_action + loss_baseline + loss_reinforce
