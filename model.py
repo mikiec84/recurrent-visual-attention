@@ -94,6 +94,12 @@ class RecurrentAttention(nn.Module):
 
         return h_t, l_t, b_t, None, log_pi
 
+    def init_loc(self, batch_size):
+        dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
+        l_t = torch.Tensor(batch_size, 2).uniform_(-1, 1)
+        l_t = Variable(l_t).type(dtype)
+        return l_t
+
     def forward(self, x, y, is_training=True):
         if self.use_gpu:
             x, y = x.cuda(), y.cuda()
@@ -102,8 +108,10 @@ class RecurrentAttention(nn.Module):
         if not is_training:
             return self.forward_test(x, y)
 
+        batch_size = x.shape[0]
         # initialize location vector and hidden state
-        h_t, l_t = self.rnn.init_state(x.shape[0], self.use_gpu)
+        h_t = self.rnn.init_state(batch_size, self.use_gpu)
+        l_t = self.init_loc(batch_size)
 
         # extract the glimpses
         locs = []

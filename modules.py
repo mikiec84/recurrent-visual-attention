@@ -183,10 +183,7 @@ class core_network(nn.Module):
         h_t = torch.zeros(batch_size, self.hidden_size)
         h_t = Variable(h_t).type(dtype)
 
-        l_t = torch.Tensor(batch_size, 2).uniform_(-1, 1)
-        l_t = Variable(l_t).type(dtype)
-
-        return h_t, l_t
+        return h_t
 
 
 class ActionNet(nn.Module):
