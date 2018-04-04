@@ -94,24 +94,7 @@ class RecurrentAttention(nn.Module):
 
         return h_t, l_t, b_t, None, log_pi
 
-    def init_state(self, batch_size, use_gpu=False):
-        """
-        Initialize the hidden state of the core network
-        and the location vector.
-
-        This is called once every time a new minibatch
-        `x` is introduced.
-        """
-        dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
-        h_t = torch.zeros(batch_size, self.hidden_size)
-        h_t = Variable(h_t).type(dtype)
-
-        l_t = torch.Tensor(batch_size, 2).uniform_(-1, 1)
-        l_t = Variable(l_t).type(dtype)
-
-        return h_t, l_t
-
-    def forward(self, x, y, is_training=False):
+    def forward(self, x, y, is_training=True):
         if self.use_gpu:
             x, y = x.cuda(), y.cuda()
         x, y = Variable(x), Variable(y)
@@ -120,7 +103,7 @@ class RecurrentAttention(nn.Module):
             return self.forward_test(x, y)
 
         # initialize location vector and hidden state
-        h_t, l_t = self.init_state(x.shape[0])
+        h_t, l_t = self.rnn.init_state(x.shape[0], self.use_gpu)
 
         # extract the glimpses
         locs = []
@@ -168,7 +151,7 @@ class RecurrentAttention(nn.Module):
         x = x.repeat(self.M, 1, 1, 1)
 
         # initialize location vector and hidden state
-        h_t, l_t = self.init_state(x.shape[0])
+        h_t, l_t = self.rnn.init_state(x.shape[0])
 
         # extract the glimpses
         log_pi = []

@@ -148,7 +148,7 @@ class core_network(nn.Module):
     - hidden_size: hidden size of the rnn.
     - g_t: a 2D tensor of shape (B, hidden_size). The glimpse
       representation returned by the glimpse network for the
-      current timestep `t`.
+     current timestep `t`.
     - h_t_prev: a 2D tensor of shape (B, hidden_size). The
       hidden state vector for the previous timestep `t-1`.
 
@@ -170,6 +170,23 @@ class core_network(nn.Module):
         h2 = self.h2h(h_t_prev)
         h_t = F.relu(h1 + h2)
         return h_t
+
+    def init_state(self, batch_size, use_gpu=False):
+        """
+        Initialize the hidden state of the core network
+        and the location vector.
+
+        This is called once every time a new minibatch
+        `x` is introduced.
+        """
+        dtype = torch.cuda.FloatTensor if use_gpu else torch.FloatTensor
+        h_t = torch.zeros(batch_size, self.hidden_size)
+        h_t = Variable(h_t).type(dtype)
+
+        l_t = torch.Tensor(batch_size, 2).uniform_(-1, 1)
+        l_t = Variable(l_t).type(dtype)
+
+        return h_t, l_t
 
 
 class action_network(nn.Module):
