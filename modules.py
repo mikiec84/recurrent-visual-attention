@@ -51,10 +51,10 @@ class retina(object):
 
     def extract_patch(self, x, l, size):
         """
-        @param x: img. (batch, channel, height, width)
+        @param x: img. (batch, height, width, channel)
         @param l: location. (batch, 2)
         @param size: the size of the extracted patch.
-        @return Variable (batch, channel, size, size)
+        @return Variable (batch, height, width, channel)
         """
         B, C, H, W = x.shape
 
@@ -70,6 +70,11 @@ class retina(object):
         # calculate coordinate for each batch samle (padding considered)
         from_x, from_y = coords[:, 0], coords[:, 1]
         to_x, to_y = from_x + size, from_y + size
+        # The above is the original implementation
+        # It only works if the input image is a square
+        # The following is the correct implementation
+        # from_y, from_x = coords[:, 0], coords[:, 1]
+        # to_y, to_x = from_y + size, from_x + size
 
         # extract the patches
         patch = []
@@ -105,6 +110,8 @@ class glimpse_network(nn.Module):
 
     def forward(self, x_t, l_t):
         """
+        Combines the "what" and the "where" into a glimpse feature vector. Extract `num_patches` different resolution patches of the same size (patch_size, patch_size) to get "what". Then combine it with a two dimension "where" vector, each of which element is ranging in [-1,1].
+
         @param x_t: (batch, height, width, channel)
         @param l_t: (batch, 2)
         @return output: (batch, hidden_g+hidden_l)
@@ -200,49 +207,40 @@ class action_network(nn.Module):
 
 
 class location_network(nn.Module):
-    """
-    Uses the internal state `h_t` of the core network to
-    produce the location coordinates `l_t` for the next
-    time step.
-
-    Concretely, feeds the hidden state `h_t` through a fc
-    layer followed by a tanh to clamp the output beween
-    [-1, 1]. This produces a 2D vector of means used to
-    parametrize a two-component Gaussian with a fixed
-    variance from which the location coordinates `l_t`
-    for the next time step are sampled.
-
-    Hence, the location `l_t` is chosen stochastically
-    from a distribution conditioned on an affine
-    transformation of the hidden state vector `h_t`.
-
-    Args
-    ----
-    - input_size: input size of the fc layer.
-    - output_size: output size of the fc layer.
-    - std: standard deviation of the normal distribution.
-    - h_t: the hidden state vector of the core network for
-      the current time step `t`.
-
-    Returns
-    -------
-    - mu: a 2D vector of shape (B, 2).
-    - l_t: a 2D vector of shape (B, 2).
-    """
     def __init__(self, input_size, output_size, std):
+        """
+        @param input_size: input size of the fc layer.
+        @param output_size: output size of the fc layer.
+        @param std: standard deviation of the normal distribution.
+        """
         super(location_network, self).__init__()
         self.std = std
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
+        """
+        Generate next location `l_t` by calculating the coordinates
+        conditioned on an affine and adding a normal noise followed
+        by a tanh to clamp the output beween [-1, 1].
+        @param h_t: hidden state. (batch, hidden_size)
+        @return mu: noise free location. Used for calculating
+                    reinforce loss. (B, 2).
+        @return l_t: Next location. (B, 2).
+        """
         # compute mean
         mu = F.tanh(self.fc(h_t))
 
         # sample from gaussian parametrized by this mean
+        # This is the origin repo implementation
         noise = torch.from_numpy(np.random.normal(
             scale=self.std, size=mu.shape)
         )
         noise = Variable(noise.float()).type_as(mu)
+
+        # # This is an equivalent implementation
+        # noise = torch.zeros_like(mu)
+        # noise.data.normal_(std=self.std)
+
         l_t = mu + noise
 
         # bound between [-1, 1]
