@@ -67,7 +67,7 @@ class ModelCheckpoint(Callback):
         self.model = model
         self.optimizer = optimizer
         if not os.path.isdir(ckpt_dir):
-            os.path.makedirs(ckpt_dir)
+            os.makedirs(ckpt_dir)
         filename = self.model.name + '_ckpt'
         self.ckpt_path = os.path.join(ckpt_dir, filename)
         self.best_val_acc = 0.
