@@ -6,9 +6,9 @@ import torch.nn as nn
 
 from torch.distributions import Normal
 
-from modules import baseline_network
-from modules import glimpse_network, core_network
-from modules import action_network, location_network
+from modules import BaselineNet
+from modules import GlimpseNet, core_network
+from modules import ActionNet, LocationNet
 
 
 class RecurrentAttention(nn.Module):
@@ -38,11 +38,11 @@ class RecurrentAttention(nn.Module):
         self.num_glimpses = args.num_glimpses
         self.M = args.M
 
-        self.sensor = glimpse_network(args.glimpse_hidden, args.loc_hidden, args.patch_size, args.num_patches, args.glimpse_scale, args.num_channels)
+        self.sensor = GlimpseNet(args.glimpse_hidden, args.loc_hidden, args.patch_size, args.num_patches, args.glimpse_scale, args.num_channels)
         self.rnn = core_network(args.hidden_size, args.hidden_size)
-        self.locator = location_network(args.hidden_size, 2, args.std)
-        self.classifier = action_network(args.hidden_size, args.num_classes)
-        self.baseliner = baseline_network(args.hidden_size, 1)
+        self.locator = LocationNet(args.hidden_size, 2, args.std)
+        self.classifier = ActionNet(args.hidden_size, args.num_classes)
+        self.baseliner = BaselineNet(args.hidden_size, 1)
         self.name = 'ram_{}_{}x{}_{}'.format(args.num_glimpses, args.patch_size, args.patch_size, args.glimpse_scale)
 
     def step(self, x, l_t_prev, h_t_prev, last=False):

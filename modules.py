@@ -84,7 +84,7 @@ class retina(object):
         return torch.cat(patch)
 
 
-class glimpse_network(nn.Module):
+class GlimpseNet(nn.Module):
     def __init__(self, hidden_g, hidden_l, patch_size, num_patches, scale, num_channel):
         """
         @param hidden_g: hidden layer size of the fc layer for `phi`.
@@ -95,7 +95,7 @@ class glimpse_network(nn.Module):
         @param scale: scaling factor that controls the size of successive patches.
         @param num_channel: number of channels in each image.
         """
-        super(glimpse_network, self).__init__()
+        super(GlimpseNet, self).__init__()
         self.retina = retina(patch_size, num_patches, scale)
 
         # glimpse layer
@@ -189,7 +189,7 @@ class core_network(nn.Module):
         return h_t, l_t
 
 
-class action_network(nn.Module):
+class ActionNet(nn.Module):
     """
     Uses the internal state `h_t` of the core network to
     produce the final output classification.
@@ -215,7 +215,7 @@ class action_network(nn.Module):
     - a_t: output probability vector over the classes.
     """
     def __init__(self, input_size, output_size):
-        super(action_network, self).__init__()
+        super(ActionNet, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
@@ -223,14 +223,14 @@ class action_network(nn.Module):
         return a_t
 
 
-class location_network(nn.Module):
+class LocationNet(nn.Module):
     def __init__(self, input_size, output_size, std):
         """
         @param input_size: input size of the fc layer.
         @param output_size: output size of the fc layer.
         @param std: standard deviation of the normal distribution.
         """
-        super(location_network, self).__init__()
+        super(LocationNet, self).__init__()
         self.std = std
         self.fc = nn.Linear(input_size, output_size)
 
@@ -269,7 +269,7 @@ class location_network(nn.Module):
         return mu, l_t
 
 
-class baseline_network(nn.Module):
+class BaselineNet(nn.Module):
     """
     Regresses the baseline in the reward function
     to reduce the variance of the gradient update.
@@ -287,7 +287,7 @@ class baseline_network(nn.Module):
       for the current time step `t`.
     """
     def __init__(self, input_size, output_size):
-        super(baseline_network, self).__init__()
+        super(BaselineNet, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
