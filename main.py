@@ -8,7 +8,7 @@ from data_loader import get_MNIST_test_dataset, get_MNIST_train_val_dataset
 from data_loader import get_test_loader, get_train_val_loader
 from model import RecurrentAttention
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from callbacks import PlotCbk, ModelCheckpoint, LearningRateScheduler, EarlyStopping
+from callbacks import PlotCbk, TensorBoard, ModelCheckpoint, LearningRateScheduler, EarlyStopping
 import logging
 
 
@@ -59,7 +59,7 @@ def parse_args():
     misc_arg.add_argument('--random_seed', type=int, default=1, help='Seed to ensure reproducibility')
     misc_arg.add_argument('--data_dir', default='./data', help='Directory in which data is stored')
     misc_arg.add_argument('--ckpt_dir', default='./ckpt', help='Directory in which to save model checkpoints')
-    misc_arg.add_argument('--logs_dir', default='./logs/', help='Directory in which Tensorboard logs wil be stored')
+    misc_arg.add_argument('--log_dir', default='./logs/', help='Directory in which Tensorboard logs wil be stored')
     misc_arg.add_argument('--use_tensorboard', type=str2bool, default=False, help='Whether to use tensorboard for visualization')
     misc_arg.add_argument('--resume', type=str2bool, default=False, help='Whether to resume training from checkpoint')
     misc_arg.add_argument('--print_freq', type=int, default=10, help='How frequently to print training details')
@@ -138,6 +138,7 @@ if __name__ == '__main__':
                       epochs=args.epochs,
                       callbacks=[
                           PlotCbk(model, args.plot_num_imgs, args.plot_freq, args.use_gpu),
+                          TensorBoard(model, args.log_dir),
                           ModelCheckpoint(model, optimizer, args.ckpt_dir),
                           LearningRateScheduler(ReduceLROnPlateau(optimizer, 'min'), 'val_loss'),
                           EarlyStopping(model, patience=args.patience)

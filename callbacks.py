@@ -6,6 +6,7 @@ import pickle
 import os
 import torch
 import shutil
+from tflogger import TFLogger
 
 
 class Callback(object):
@@ -61,6 +62,24 @@ class PlotCbk(Callback):
                     "wb"
                 )
             )
+
+
+class TensorBoard(Callback):
+    def __init__(self, model, log_dir):
+        self.model = model
+        self.logger = TFLogger(log_dir)
+
+    def to_np(self, x):
+        return x.data.cpu().numpy()
+
+    def on_epoch_end(self, epoch, logs):
+        for tag in ['loss', 'acc']:
+            self.logger.scalar_summary(tag, logs[tag], epoch)
+
+        for tag, value in self.model.named_parameters():
+            tag = tag.replace('.', '/')
+            self.logger.histo_summary(tag, self.to_np(value), epoch)
+            self.logger.histo_summary(tag+'/grad', self.to_np(value.grad), epoch)
 
 
 class ModelCheckpoint(Callback):
