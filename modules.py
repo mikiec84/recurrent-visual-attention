@@ -9,7 +9,7 @@ import numpy as np
 
 
 class retina(object):
-    def __init__(self, patch_size, num_patches, scale):
+    def __init__(self, patch_size, num_patches, scale, use_gpu):
         """
         @param patch_size: side length of the extracted patched.
         @param num_patches: number of patches to extract in the glimpse.
@@ -18,6 +18,7 @@ class retina(object):
         self.patch_size = patch_size
         self.num_patches = num_patches
         self.scale = scale
+        self.use_gpu = use_gpu
 
     def foveate(self, x, l):
         """
@@ -61,6 +62,8 @@ class retina(object):
 
         if not hasattr(self, 'imgShape'):
             self.imgShape = torch.FloatTensor([H, W]).unsqueeze(0)
+            if self.use_gpu:
+                self.imgShape = self.imgShape.cuda()
 
         # coordins from [-1,1] to H,W scale
         coords = (0.5 * ((l.data + 1.0) * self.imgShape)).long()
@@ -86,7 +89,7 @@ class retina(object):
 
 
 class GlimpseNet(nn.Module):
-    def __init__(self, hidden_g, hidden_l, patch_size, num_patches, scale, num_channel):
+    def __init__(self, hidden_g, hidden_l, patch_size, num_patches, scale, num_channel, use_gpu):
         """
         @param hidden_g: hidden layer size of the fc layer for `phi`.
         @param hidden_l: hidden layer size of the fc layer for `l`.
@@ -97,7 +100,7 @@ class GlimpseNet(nn.Module):
         @param num_channel: number of channels in each image.
         """
         super(GlimpseNet, self).__init__()
-        self.retina = retina(patch_size, num_patches, scale)
+        self.retina = retina(patch_size, num_patches, scale, use_gpu)
 
         # glimpse layer
         D_in = num_patches*patch_size*patch_size*num_channel
@@ -289,7 +292,7 @@ class RAMNet(nn.Module):
         self.num_glimpses = args.num_glimpses
         self.std = args.std
 
-        self.glimpse_net = GlimpseNet(args.glimpse_hidden, args.loc_hidden, args.patch_size, args.num_patches, args.glimpse_scale, args.num_channels)
+        self.glimpse_net = GlimpseNet(args.glimpse_hidden, args.loc_hidden, args.patch_size, args.num_patches, args.glimpse_scale, args.num_channels, args.use_gpu)
         self.rnn = core_network(rnn_inp_size, args.rnn_hidden, args.use_gpu)
         self.location_net = LocationNet(args.rnn_hidden, 2, args.std)
         self.classifier = ActionNet(args.rnn_hidden, args.num_class)
