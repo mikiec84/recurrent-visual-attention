@@ -84,7 +84,7 @@ class retina(object):
         return torch.cat(patch)
 
 
-class glimpse_network(nn.Module):
+class GlimpseNet(nn.Module):
     def __init__(self, hidden_g, hidden_l, patch_size, num_patches, scale, num_channel):
         """
         @param hidden_g: hidden layer size of the fc layer for `phi`.
@@ -95,7 +95,7 @@ class glimpse_network(nn.Module):
         @param scale: scaling factor that controls the size of successive patches.
         @param num_channel: number of channels in each image.
         """
-        super(glimpse_network, self).__init__()
+        super(GlimpseNet, self).__init__()
         self.retina = retina(patch_size, num_patches, scale)
 
         # glimpse layer
@@ -145,25 +145,24 @@ class core_network(nn.Module):
     Args
     ----
     - input_size: input size of the rnn.
-    - hidden_size: hidden size of the rnn.
-    - g_t: a 2D tensor of shape (B, hidden_size). The glimpse
-      representation returned by the glimpse network for the
-      current timestep `t`.
-    - h_t_prev: a 2D tensor of shape (B, hidden_size). The
+    - rnn_hidden: hidden size of the rnn.
+    - g_t: a 2D tensor of shape (B, rnn_hidden). The glimpse
+      representation returned by the glimpse network for the current timestep `t`.
+    - h_t_prev: a 2D tensor of shape (B, rnn_hidden). The
       hidden state vector for the previous timestep `t-1`.
 
     Returns
     -------
-    - h_t: a 2D tensor of shape (B, hidden_size). The hidden
+    - h_t: a 2D tensor of shape (B, rnn_hidden). The hidden
       state vector for the current timestep `t`.
     """
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, input_size, rnn_hidden):
         super(core_network, self).__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.rnn_hidden = rnn_hidden
 
-        self.i2h = nn.Linear(input_size, hidden_size)
-        self.h2h = nn.Linear(hidden_size, hidden_size)
+        self.i2h = nn.Linear(input_size, rnn_hidden)
+        self.h2h = nn.Linear(rnn_hidden, rnn_hidden)
 
     def forward(self, g_t, h_t_prev):
         h1 = self.i2h(g_t)
@@ -171,49 +170,48 @@ class core_network(nn.Module):
         h_t = F.relu(h1 + h2)
         return h_t
 
+    def init_hidden(self, batch_size, use_gpu=False):
+        """
+        Initialize the hidden state of the core network
+        and the location vector.
 
-class action_network(nn.Module):
-    """
-    Uses the internal state `h_t` of the core network to
-    produce the final output classification.
+        This is called once every time a new minibatch
+        `x` is introduced.
+        """
+        dtype = torch.cuda.FloatTensor if use_gpu else torch.FloatTensor
+        h_t = torch.zeros(batch_size, self.rnn_hidden)
+        h_t = Variable(h_t).type(dtype)
 
-    Concretely, feeds the hidden state `h_t` through a fc
-    layer followed by a softmax to create a vector of
-    output probabilities over the possible classes.
+        return h_t
 
-    Hence, the environment action `a_t` is drawn from a
-    distribution conditioned on an affine transformation
-    of the hidden state vector `h_t`, or in other words,
-    the action network is simply a linear softmax classifier.
 
-    Args
-    ----
-    - input_size: input size of the fc layer.
-    - output_size: output size of the fc layer.
-    - h_t: the hidden state vector of the core network for
-      the current time step `t`.
-
-    Returns
-    -------
-    - a_t: output probability vector over the classes.
-    """
+class ActionNet(nn.Module):
     def __init__(self, input_size, output_size):
-        super(action_network, self).__init__()
+        """
+        @param input_size: input size of the fc layer.
+        @param output_size: output size of the fc layer.
+        """
+        super(ActionNet, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
+        """
+        Uses the last output of the decoder to output the final classification.
+        @param h_t: (batch, rnn_hidden)
+        @return a_t: (batch, output_size)
+        """
         a_t = F.log_softmax(self.fc(h_t), dim=1)
         return a_t
 
 
-class location_network(nn.Module):
+class LocationNet(nn.Module):
     def __init__(self, input_size, output_size, std):
         """
         @param input_size: input size of the fc layer.
         @param output_size: output size of the fc layer.
         @param std: standard deviation of the normal distribution.
         """
-        super(location_network, self).__init__()
+        super(LocationNet, self).__init__()
         self.std = std
         self.fc = nn.Linear(input_size, output_size)
 
@@ -222,12 +220,12 @@ class location_network(nn.Module):
         Generate next location `l_t` by calculating the coordinates
         conditioned on an affine and adding a normal noise followed
         by a tanh to clamp the output beween [-1, 1].
-        @param h_t: hidden state. (batch, hidden_size)
+        @param h_t: hidden state. (batch, rnn_hidden)
         @return mu: noise free location. Used for calculating
                     reinforce loss. (B, 2).
         @return l_t: Next location. (B, 2).
         """
-        # compute mean
+        # compute noise-free location
         mu = F.tanh(self.fc(h_t))
 
         # sample from gaussian parametrized by this mean
@@ -241,18 +239,19 @@ class location_network(nn.Module):
         # noise = torch.zeros_like(mu)
         # noise.data.normal_(std=self.std)
 
+        # add noise to the location and bound between [-1, 1]
         l_t = mu + noise
-
-        # bound between [-1, 1]
         l_t = F.tanh(l_t)
 
         # prevent gradient flow
+        # Note that l_t is not used to calculate gradients later.
+        # Hence detach it explicitly here.
         l_t = l_t.detach()
 
         return mu, l_t
 
 
-class baseline_network(nn.Module):
+class BaselineNet(nn.Module):
     """
     Regresses the baseline in the reward function
     to reduce the variance of the gradient update.
@@ -270,7 +269,7 @@ class baseline_network(nn.Module):
       for the current time step `t`.
     """
     def __init__(self, input_size, output_size):
-        super(baseline_network, self).__init__()
+        super(BaselineNet, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
