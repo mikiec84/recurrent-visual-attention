@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from utils import denormalize, bounding_box
+from utils import bounding_box
 
 
 def parse_arguments():
@@ -21,25 +21,22 @@ def parse_arguments():
 def main(plot_dir, epoch):
 
     # read in pickle files
-    glimpses = pickle.load(
-        open(os.path.join(plot_dir, "g_{}.p".format(epoch)), "rb")
-    )
-    locations = pickle.load(
-        open(os.path.join(plot_dir, "l_{}.p".format(epoch)), "rb")
-    )
+    with open(os.path.join(plot_dir, "g_{}.p".format(epoch)), "rb") as f:
+        glimpses = pickle.load(f)
 
-    glimpses = np.concatenate(glimpses)
+    with open(os.path.join(plot_dir, "l_{}.p".format(epoch)), "rb") as f:
+        locations = pickle.load(f)
 
     # grab useful params
-    size = int(plot_dir.split('_')[2][0])
-    num_anims = len(locations)
-    num_cols = glimpses.shape[0]
-    img_shape = glimpses.shape[1]
+    patch_size = int(plot_dir.split('_')[2][0])
+    num_glimpses = len(locations)
+    num_imgs = glimpses.shape[0]
+    img_shape = np.asarray([glimpses[0].shape[1:]])
 
     # denormalize coordinates
-    coords = [denormalize(img_shape, l) for l in locations]
+    coords = [0.5 * ((l+1.0) * img_shape) for l in locations]
 
-    fig, axs = plt.subplots(nrows=1, ncols=num_cols)
+    fig, axs = plt.subplots(nrows=1, ncols=num_imgs)
     # fig.set_dpi(100)
 
     # plot base image
@@ -56,13 +53,13 @@ def main(plot_dir, epoch):
                 p.remove()
             c = co[j]
             rect = bounding_box(
-                c[0], c[1], size, color
+                c[0], c[1], patch_size, color
             )
             ax.add_patch(rect)
 
     # animate
     anim = animation.FuncAnimation(
-        fig, updateData, frames=num_anims, interval=500, repeat=True
+        fig, updateData, frames=num_glimpses, interval=500, repeat=True
     )
 
     # save as mp4

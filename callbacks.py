@@ -30,8 +30,9 @@ class Callback(object):
 
 
 class PlotCbk(Callback):
-    def __init__(self, model, plot_freq, use_gpu):
+    def __init__(self, model, num_imgs, plot_freq, use_gpu):
         self.model = model
+        self.num_imgs = num_imgs
         self.plot_freq = plot_freq
         self.use_gpu = use_gpu
         self.plot_dir = './plots/' + self.model.name + '/'
@@ -39,15 +40,15 @@ class PlotCbk(Callback):
             os.makedirs(self.plot_dir)
 
     def on_batch_end(self, epoch, batch_ind, logs={}):
-        imgs = [logs['x'][0:9]]
-        locs = [loc[0:9] for loc in logs['locs']]
+        imgs = logs['x'][:self.num_imgs].squeeze(1)
+        locs = [loc[:self.num_imgs] for loc in logs['locs']]
         if (epoch % self.plot_freq == 0) and (batch_ind == 0):
             if self.use_gpu:
-                imgs = [g.cpu().data.numpy().squeeze() for g in imgs]
-                locs = [l.cpu().data.numpy() for l in locs]
-            else:
-                imgs = [g.data.numpy().squeeze() for g in imgs]
-                locs = [l.data.numpy() for l in locs]
+                imgs = imgs.cpu()
+                locs = [l.cpu() for l in locs]
+
+            imgs = imgs.data.numpy()
+            locs = [l.data.numpy() for l in locs]
             pickle.dump(
                 imgs, open(
                     self.plot_dir + "g_{}.p".format(epoch),

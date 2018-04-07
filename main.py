@@ -61,6 +61,7 @@ def parse_args():
     misc_arg.add_argument('--resume', type=str2bool, default=False, help='Whether to resume training from checkpoint')
     misc_arg.add_argument('--print_freq', type=int, default=10, help='How frequently to print training details')
     misc_arg.add_argument('--plot_freq', type=int, default=1, help='How frequently to plot glimpses')
+    misc_arg.add_argument('--plot_num_imgs', type=int, default=6, help='How many imgs to plot glimpses animiation')
     return parser.parse_args(sys.argv[1:])
 
 
@@ -133,7 +134,7 @@ if __name__ == '__main__':
                       start_epoch=start_epoch,
                       epochs=args.epochs,
                       callbacks=[
-                          PlotCbk(model, args.plot_freq, args.use_gpu),
+                          PlotCbk(model, args.plot_num_imgs, args.plot_freq, args.use_gpu),
                           ModelCheckpoint(model, optimizer, args.ckpt_dir),
                           LearningRateScheduler(ReduceLROnPlateau(optimizer, 'min'), 'val_loss'),
                           EarlyStopping(model, patience=args.patience)
