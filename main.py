@@ -32,6 +32,9 @@ def parse_args():
     location_arg = parser.add_argument_group('LocationNet Params')
     location_arg.add_argument('--std', type=float, default=0.17, help='gaussian policy standard deviation')
 
+    # core_network params
+    core_network_arg = parser.add_argument_group('core_network Params')
+    core_network_arg.add_argument('--rnn_hidden', type=int, default=256, help='hidden size of the rnn')  # on purpose set equal to glimpse_hidden + loc_hidden, can be changed
     # data params
     data_arg = parser.add_argument_group('Data Params')
     data_arg.add_argument('--val_split', type=float, default=0.1, help='Proportion of training set used for validation')

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Normal
 
 from torch.autograd import Variable
 
@@ -156,10 +157,11 @@ class core_network(nn.Module):
     - h_t: a 2D tensor of shape (B, rnn_hidden). The hidden
       state vector for the current timestep `t`.
     """
-    def __init__(self, input_size, rnn_hidden):
+    def __init__(self, input_size, rnn_hidden, use_gpu):
         super(core_network, self).__init__()
         self.input_size = input_size
         self.rnn_hidden = rnn_hidden
+        self.use_gpu = use_gpu
 
         self.i2h = nn.Linear(input_size, rnn_hidden)
         self.h2h = nn.Linear(rnn_hidden, rnn_hidden)
@@ -178,7 +180,7 @@ class core_network(nn.Module):
         This is called once every time a new minibatch
         `x` is introduced.
         """
-        dtype = torch.cuda.FloatTensor if use_gpu else torch.FloatTensor
+        dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
         h_t = torch.zeros(batch_size, self.rnn_hidden)
         h_t = Variable(h_t).type(dtype)
 
@@ -235,7 +237,7 @@ class LocationNet(nn.Module):
         )
         noise = Variable(noise.float()).type_as(mu)
 
-        # # This is an equivalent implementation
+        # This is an equivalent implementation
         # noise = torch.zeros_like(mu)
         # noise.data.normal_(std=self.std)
 
@@ -275,3 +277,68 @@ class BaselineNet(nn.Module):
     def forward(self, h_t):
         b_t = F.relu(self.fc(h_t))
         return b_t
+
+
+class RAMNet(nn.Module):
+    def __init__(self, args):
+        """
+        Initialize the recurrent attention model and its different components.
+        """
+        super(RAMNet, self).__init__()
+        rnn_inp_size = args.glimpse_hidden + args.loc_hidden
+        self.num_glimpses = args.num_glimpses
+        self.std = args.std
+
+        self.glimpse_net = GlimpseNet(args.glimpse_hidden, args.loc_hidden, args.patch_size, args.num_patches, args.glimpse_scale, args.num_channels)
+        self.rnn = core_network(rnn_inp_size, args.rnn_hidden, args.use_gpu)
+        self.location_net = LocationNet(args.rnn_hidden, 2, args.std)
+        self.classifier = ActionNet(args.rnn_hidden, args.num_class)
+        self.baseline_net = BaselineNet(args.rnn_hidden, 1)
+
+    def step(self, x, l_t, h_t):
+        """
+        @param x: image. (batch, channel, height, width)
+        @param l_t: location trial. (batch, 2)
+        @param h_t: last hidden state. (batch, rnn_hidden)
+        @return h_t: next hidden state. (batch, rnn_hidden)
+        @return l_t: next location trial. (batch, 2)
+        @return b_t: baseline for step t. (batch)
+        @return log_pi: probability for next location trial. (batch)
+        """
+        glimpse = self.glimpse_net(x, l_t)
+        h_t = self.rnn(glimpse, h_t)
+        mu, l_t = self.location_net(h_t)
+        b_t = self.baseline_net(h_t).squeeze()
+
+        log_pi = Normal(mu, self.std).log_prob(l_t)
+        # Note: log(p_y*p_x) = log(p_y) + log(p_x)
+        log_pi = log_pi.sum(dim=1)
+
+        return h_t, l_t, b_t, log_pi
+
+    def forward(self, x, l_t):
+        """
+        @param x: image. (batch, channel, height, width)
+        @param l_t: initial location. (batch, 2)
+
+        @return hiddens: hidden states (output) of rnn. (batch, num_glimpses, rnn_hidden)
+        @return locs: locations. (batch, 2)*num_glimpses
+        @return baselines: (batch, num_glimpses)
+        @return log_pi: probabilities for each location trial. (batch, num_glimpses)
+        """
+        batch_size = x.shape[0]
+        h_t = self.rnn.init_hidden(batch_size)
+
+        locs = []
+        baselines = []
+        log_pi = []
+        for t in range(self.num_glimpses):
+            h_t, l_t, b_t, p_t = self.step(x, l_t, h_t)
+            locs.append(l_t)
+            baselines.append(b_t)
+            log_pi.append(p_t)
+
+        log_probas = self.classifier(h_t)
+        baselines = torch.stack(baselines).transpose(1, 0)
+        log_pi = torch.stack(log_pi).transpose(1, 0)
+        return locs, baselines, log_pi, log_probas
