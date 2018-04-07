@@ -2,45 +2,51 @@ from tqdm import tqdm
 from utils import AverageMeter
 import logging
 
-logger = logging.getLogger('OCR')
+logger = logging.getLogger('RAM')
 
 
 class Trainer(object):
     """
     Trainer encapsulates all the logic necessary for training.
     """
-    def __init__(self, model, optimizer):
+    def __init__(self, model, optimizer, watch=[], val_watch=[]):
         self.model = model
         self.optimizer = optimizer
         self.stop_training = False
+        self.watch = watch
+        self.val_watch = val_watch
+        if 'loss' not in watch:
+            watch.insert(0, 'loss')
+        if 'loss' not in val_watch:
+            val_watch.insert(0, 'loss')
 
     def train(self, train_loader, val_loader, start_epoch=0, epochs=200, callbacks=[]):
         for epoch in range(start_epoch, epochs):
             if self.stop_training:
                 return
-            train_loss, train_acc = self.train_one_epoch(epoch, train_loader, callbacks=callbacks)
-            val_loss, val_acc = self.validate(epoch, val_loader)
+            epoch_log = self.train_one_epoch(epoch, train_loader, callbacks=callbacks)
+            val_log = self.validate(epoch, val_loader)
 
-            msg = "train loss: {:.3f} - train acc: {:.3f}  val loss: {:.3f} - val acc: {:.3f}"
-            logger.info(msg.format(train_loss, train_acc, val_loss, val_acc))
+            msg = ' '.join(['{}: {:.3f}'.format(name, avg) for name, avg in epoch_log.items()])
+            logger.info(msg)
+            msg = ' '.join(['{}: {:.3f}'.format(name, avg) for name, avg in val_log.items()])
+            logger.info(msg)
+            epoch_log.update(val_log)
 
             for cbk in callbacks:
-                cbk.on_epoch_end(epoch, {'val_loss': val_loss, 'val_acc': val_acc})
+                cbk.on_epoch_end(epoch, epoch_log)
 
     def train_one_epoch(self, epoch, train_loader, callbacks=[]):
         """
         Train the model for 1 epoch of the training set.
         """
-        losses = AverageMeter()
-        accs = AverageMeter()
+        epoch_log = {name: AverageMeter() for name in self.watch}
 
         for i, (x, y) in enumerate(tqdm(train_loader, unit='batch', desc='Epoch {:>3}'.format(epoch))):
             metric = self.model.forward(x, y, is_training=True)
             loss = metric['loss']
-            acc = metric['acc']
-
-            losses.update(loss.data[0], x.size()[0])
-            accs.update(acc.data[0], x.size()[0])
+            for name, avg in epoch_log.items():
+                epoch_log[name].update(metric[name].data[0], x.size()[0])
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -49,25 +55,21 @@ class Trainer(object):
             for cbk in callbacks:
                 cbk.on_batch_end(epoch, i, logs=metric)
 
-        return losses.avg, accs.avg
+        return {name: meter.avg for name, meter in epoch_log.items()}
 
     def validate(self, epoch, val_loader):
         """
         Evaluate the model on the validation set.
         """
-        losses = AverageMeter()
-        accs = AverageMeter()
+        val_log = {name: AverageMeter() for name in self.watch}
 
         for i, (x, y) in enumerate(val_loader):
             # metric = self.model.forward(x, y, is_training=False)
             metric = self.model.forward(x, y)
-            loss = metric['loss']
-            acc = metric['acc']
+            for name, avg in val_log.items():
+                val_log[name].update(metric[name].data[0], x.size()[0])
 
-            losses.update(loss.data[0], x.size()[0])
-            accs.update(acc.data[0], x.size()[0])
-
-        return losses.avg, accs.avg
+        return {'val_'+name: meter.avg for name, meter in val_log.items()}
 
     def test(self, test_loader, best=True):
         """

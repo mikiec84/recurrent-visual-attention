@@ -12,87 +12,44 @@ from modules import ActionNet, LocationNet
 
 
 class RecurrentAttention(nn.Module):
-    """
-    A Recurrent Model of Visual Attention (RAM) [1].
-
-    RAM is a recurrent neural network that processes
-    inputs sequentially, attending to different locations
-    within the image one at a time, and incrementally
-    combining information from these fixations to build
-    up a dynamic internal representation of the image.
-
-    References
-    ----------
-    - Minh et. al., https://arxiv.org/abs/1406.6247
-    """
-
     def __init__(self, args):
         """
-        Initialize the recurrent attention model and its
-        different components.
+        Initialize the recurrent attention model and its different components.
         """
         super(RecurrentAttention, self).__init__()
         self.std = args.std
-        self.hidden_size = args.hidden_size
+        rnn_hidden = args.glimpse_hidden + args.loc_hidden
         self.use_gpu = args.use_gpu
         self.num_glimpses = args.num_glimpses
         self.M = args.M
 
-        self.sensor = GlimpseNet(args.glimpse_hidden, args.loc_hidden, args.patch_size, args.num_patches, args.glimpse_scale, args.num_channels)
-        self.rnn = core_network(args.hidden_size, args.hidden_size)
-        self.locator = LocationNet(args.hidden_size, 2, args.std)
-        self.classifier = ActionNet(args.hidden_size, args.num_classes)
-        self.baseliner = BaselineNet(args.hidden_size, 1)
+        self.glimpse_net = GlimpseNet(args.glimpse_hidden, args.loc_hidden, args.patch_size, args.num_patches, args.glimpse_scale, args.num_channels)
+        self.rnn = core_network(rnn_hidden, rnn_hidden)
+        self.location_net = LocationNet(rnn_hidden, 2, args.std)
+        self.predictor = ActionNet(rnn_hidden, args.num_class)
+        self.baseline_net = BaselineNet(rnn_hidden, 1)
         self.name = 'ram_{}_{}x{}_{}'.format(args.num_glimpses, args.patch_size, args.patch_size, args.glimpse_scale)
 
-    def step(self, x, l_t_prev, h_t_prev, last=False):
+    def step(self, x, l_t, h_t):
         """
-        Run the recurrent attention model for 1 timestep
-        on the minibatch of images `x`.
-
-        Args
-        ----
-        - x: a 4D Tensor of shape (B, H, W, C). The minibatch
-          of images.
-        - l_t_prev: a 2D tensor of shape (B, 2). The location vector
-          containing the glimpse coordinates [x, y] for the previous
-          timestep `t-1`.
-        - h_t_prev: a 2D tensor of shape (B, hidden_size). The hidden
-          state vector for the previous timestep `t-1`.
-        - last: a bool indicating whether this is the last timestep.
-          If True, the action network returns an output probability
-          vector over the classes and the baseline `b_t` for the
-          current timestep `t`. Else, the core network returns the
-          hidden state vector for the next timestep `t+1` and the
-          location vector for the next timestep `t+1`.
-
-        Returns
-        -------
-        - h_t: a 2D tensor of shape (B, hidden_size). The hidden
-          state vector for the current timestep `t`.
-        - mu: a 2D tensor of shape (B, 2). The mean that parametrizes
-          the Gaussian policy.
-        - l_t: a 2D tensor of shape (B, 2). The location vector
-          containing the glimpse coordinates [x, y] for the
-          current timestep `t`.
-        - b_t: a 2D vector of shape (B, 1). The baseline for the
-          current time step `t`.
-        - log_probas: a 2D tensor of shape (B, num_classes). The
-          output log probability vector over the classes.
+        @param x: image. (batch, channel, height, width)
+        @param l_t: location trial. (batch, 2)
+        @param h_t: last hidden state. (batch, rnn_hidden)
+        @return h_t: next hidden state. (batch, rnn_hidden)
+        @return l_t: next location trial. (batch, 2)
+        @return b_t: baseline for step t. (batch)
+        @return log_pi: probability for next location trial. (batch)
         """
-        g_t = self.sensor(x, l_t_prev)
-        h_t = self.rnn(g_t, h_t_prev)
-        mu, l_t = self.locator(h_t)
-        b_t = self.baseliner(h_t).squeeze()
+        glimpse = self.glimpse_net(x, l_t)
+        h_t = self.rnn(glimpse, h_t)
+        mu, l_t = self.location_net(h_t)
+        b_t = self.baseline_net(h_t).squeeze()
 
         log_pi = Normal(mu, self.std).log_prob(l_t)
+        # Note: log(p_y*p_x) = log(p_y) + log(p_x)
         log_pi = torch.sum(log_pi, dim=1)
 
-        if last:
-            log_probas = self.classifier(h_t)
-            return h_t, l_t, b_t, log_probas, log_pi
-
-        return h_t, l_t, b_t, None, log_pi
+        return h_t, l_t, b_t, log_pi
 
     def init_loc(self, batch_size):
         dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
@@ -100,7 +57,7 @@ class RecurrentAttention(nn.Module):
         l_t = Variable(l_t).type(dtype)
         return l_t
 
-    def forward(self, x, y, is_training=True):
+    def forward(self, x, y, is_training=False):
         if self.use_gpu:
             x, y = x.cuda(), y.cuda()
         x, y = Variable(x), Variable(y)
@@ -110,8 +67,8 @@ class RecurrentAttention(nn.Module):
 
         batch_size = x.shape[0]
         # initialize location vector and hidden state
-        h_t = self.rnn.init_state(batch_size, self.use_gpu)
         l_t = self.init_loc(batch_size)
+        h_t = self.rnn.init_hidden(batch_size, self.use_gpu)
 
         # extract the glimpses
         locs = []
@@ -119,12 +76,14 @@ class RecurrentAttention(nn.Module):
         baselines = []
         for t in range(self.num_glimpses):
             # Note that log_probas is None except for t=num_glimpses-1
-            h_t, l_t, b_t, log_probas, p = self.step(x, l_t, h_t, last=(t==self.num_glimpses-1))
+            h_t, l_t, b_t, p = self.step(x, l_t, h_t)
 
             # store
             locs.append(l_t)
             baselines.append(b_t)
             log_pi.append(p)
+
+        log_probas = self.predictor(h_t)
 
         # convert list to tensors and reshape
         baselines = torch.stack(baselines).transpose(1, 0)
@@ -159,7 +118,9 @@ class RecurrentAttention(nn.Module):
         x = x.repeat(self.M, 1, 1, 1)
 
         # initialize location vector and hidden state
-        h_t, l_t = self.rnn.init_state(x.shape[0])
+        batch_size = x.shape[0]
+        l_t = self.init_loc(batch_size)
+        h_t = self.rnn.init_hidden(batch_size)
 
         # extract the glimpses
         log_pi = []
@@ -167,11 +128,13 @@ class RecurrentAttention(nn.Module):
         for t in range(self.num_glimpses):
 
             # forward pass through model
-            h_t, l_t, b_t, log_probas, p = self.step(x, l_t, h_t, last=(t==self.num_glimpses-1))
+            h_t, l_t, b_t, p = self.step(x, l_t, h_t)
 
             # store
             baselines.append(b_t)
             log_pi.append(p)
+
+        log_probas = self.predictor(h_t)
 
         # convert list to tensors and reshape
         baselines = torch.stack(baselines).transpose(1, 0)
@@ -204,10 +167,7 @@ class RecurrentAttention(nn.Module):
 
         # compute reinforce loss
         adjusted_reward = R - baselines.detach()
-        # https://github.com/kevinzakka/recurrent-visual-attention/issues/10
-        # loss_reinforce = torch.mean(-log_pi*adjusted_reward)
-        loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
-        loss_reinforce = torch.mean(loss_reinforce)
+        loss_reinforce = torch.mean(-log_pi*adjusted_reward)
 
         # sum up into a hybrid loss
         loss = loss_action + loss_baseline + loss_reinforce
